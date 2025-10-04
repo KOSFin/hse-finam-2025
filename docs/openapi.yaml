@@ -1,0 +1,329 @@
+openapi: 3.0.3
+info:
+  title: Radar API
+  version: 1.0.0
+  description: |
+    Programmatic interface for the Radar news clustering service. This API exposes
+    health checks, aggregated event retrieval, and an ingest endpoint for submitting
+    ad-hoc news articles.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+paths:
+  /healthz:
+    get:
+      summary: Health probe
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /radar:
+    get:
+      summary: Fetch aggregated radar events
+      operationId: listEvents
+      parameters:
+        - in: query
+          name: limit
+          description: Maximum number of events to return. Defaults to the configured `top_k` (5 by default).
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: from
+          description: Inclusive lower bound for the event window in RFC3339 format.
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          description: Inclusive upper bound for the event window in RFC3339 format. Defaults to now.
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: window_hours
+          description: Overrides the default trailing window size (24 hours by default). Mutually exclusive with the `from` parameter.
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: lang
+          description: Optional ISO language code used to filter events.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Aggregated events retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RadarResponse'
+        '500':
+          description: Pipeline execution failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /news:
+    post:
+      summary: Submit a news item for ingest
+      operationId: submitNews
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewsIngestRequest'
+            examples:
+              minimal:
+                summary: Minimal payload
+                value:
+                  headline: "Earnings beat expectations"
+                  url: "https://example.com/story"
+                  published_at: "2025-03-20T08:15:00Z"
+                  tickers: ["AAPL"]
+              full:
+                summary: Full payload
+                value:
+                  id: "article-123"
+                  headline: "Central bank raises rates"
+                  summary: "Markets react to policy shift"
+                  body: "Full text ..."
+                  source: "wire"
+                  url: "https://example.com/rates"
+                  language: "en"
+                  published_at: "2025-03-20T08:15:00Z"
+                  tickers: ["SPX", "DJI"]
+                  entities: ["Federal Reserve"]
+                  country: "US"
+                  category: "macro"
+                  sentiment: 0.42
+                  importance_tag: "breaking"
+      responses:
+        '202':
+          description: News item accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsIngestResponse'
+        '400':
+          description: Payload validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Ingest pipeline disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+      required:
+        - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: invalid payload
+      required:
+        - error
+    RadarResponse:
+      type: object
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          description: Timestamp indicating when the response was generated.
+        from:
+          type: string
+          format: date-time
+          description: Window start used for aggregation.
+        to:
+          type: string
+          format: date-time
+          description: Window end used for aggregation.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+      required:
+        - as_of
+        - from
+        - to
+        - events
+    Event:
+      type: object
+      properties:
+        dedup_group:
+          type: string
+          description: Identifier for the deduplicated cluster the event belongs to.
+        headline:
+          type: string
+        hotness:
+          type: number
+          format: float
+          description: Event-level ranking score.
+        why_now:
+          type: string
+        entities:
+          type: array
+          items:
+            type: string
+        tickers:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRef'
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineEntry'
+        draft:
+          $ref: '#/components/schemas/Draft'
+      required:
+        - dedup_group
+        - headline
+        - hotness
+        - why_now
+        - entities
+        - tickers
+        - sources
+        - timeline
+        - draft
+    SourceRef:
+      type: object
+      properties:
+        title:
+          type: string
+        source:
+          type: string
+        url:
+          type: string
+          format: uri
+        published:
+          type: string
+          format: date-time
+      required:
+        - title
+        - source
+        - url
+        - published
+    TimelineEntry:
+      type: object
+      properties:
+        label:
+          type: string
+        source:
+          type: string
+        url:
+          type: string
+          format: uri
+        timestamp:
+          type: string
+          format: date-time
+      required:
+        - label
+        - source
+        - url
+        - timestamp
+    Draft:
+      type: object
+      properties:
+        title:
+          type: string
+        lead:
+          type: string
+        bullets:
+          type: array
+          items:
+            type: string
+        quote:
+          type: string
+      required:
+        - title
+        - lead
+        - bullets
+    NewsIngestRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Optional identifier; generated server-side when omitted.
+        headline:
+          type: string
+        summary:
+          type: string
+        body:
+          type: string
+        source:
+          type: string
+          description: Source label of the article. Defaults to `ingest` when omitted.
+        url:
+          type: string
+          format: uri
+        language:
+          type: string
+          description: ISO language code. Defaults to `en`.
+        published_at:
+          type: string
+          format: date-time
+        tickers:
+          type: array
+          items:
+            type: string
+          description: List of related ticker symbols.
+        entities:
+          type: array
+          items:
+            type: string
+        country:
+          type: string
+        category:
+          type: string
+        sentiment:
+          type: number
+          format: float
+          description: Optional sentiment score in the range [-1, 1].
+        importance_tag:
+          type: string
+      required:
+        - headline
+        - url
+    NewsIngestResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: accepted
+        id:
+          type: string
+          description: Identifier assigned to the stored item.
+        published_at:
+          type: string
+          format: date-time
+      required:
+        - status
+        - id
+        - published_at

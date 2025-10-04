@@ -33,6 +33,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/radar", s.handleRadar)
 	mux.HandleFunc("/news", s.handleIngest)
+	mux.HandleFunc("/swagger/openapi.yaml", serveSwaggerYAML)
+	mux.HandleFunc("/swagger", serveSwaggerUI)
+	mux.HandleFunc("/swagger/", serveSwaggerUI)
 	return mux
 }
 
