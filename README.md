@@ -29,6 +29,26 @@ go run ./cmd/api
 Invoke-WebRequest -Uri "http://localhost:8080/radar?limit=2" | Select-Object -ExpandProperty Content
 ```
 
+## Запуск в Docker
+
+Сервис собирается многослойным образом и включает статический датасет `data/sample_news.json` внутрь образа.
+
+```powershell
+# Соберите образ
+docker build -t finamhack/radar-api .
+
+# Запустите контейнер
+docker run --rm -p 8080:8080 finamhack/radar-api
+```
+
+Для более удобного управления можно использовать `docker-compose`:
+
+```powershell
+docker compose up --build
+```
+
+Переменные окружения можно переопределить через `docker run -e` или секцию `environment` в `docker-compose.yml`.
+
 ## Конфигурация
 
 Переменные окружения:

@@ -1,0 +1,28 @@
+# Build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Modules cache
+pkg/
+
+# Vendor folder (use go mod download)
+vendor/
+
+# Git
+.git
+.gitignore
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Tests output
+coverage.out

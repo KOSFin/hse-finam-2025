@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  radar-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finamhack/radar-api:latest
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
