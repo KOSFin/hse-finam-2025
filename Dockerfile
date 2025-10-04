@@ -15,6 +15,7 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY data ./data
+COPY docs ./docs
 
 # Disable CGO for static binary
 ENV CGO_ENABLED=0
