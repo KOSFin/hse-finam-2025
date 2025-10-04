@@ -55,9 +55,10 @@ func main() {
 
 	server := transporthttp.NewServer(pipeline, cfg, ingestSource)
 
+	// добавляем CORS и логирование
 	httpServer := &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      withLogging(server.Routes()),
+		Handler:      withLogging(withCORS(server.Routes())),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -70,9 +71,9 @@ func main() {
 		}
 	}()
 
+	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	sig := <-sigCh
 	log.Printf("signal received: %s, shutting down", sig)
 
@@ -84,11 +85,37 @@ func main() {
 	}
 }
 
+// Middleware: логирование запросов
 func withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		duration := time.Since(start)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, duration)
+
+		// Отдельно подсвечиваем preflight (OPTIONS)
+		if r.Method == http.MethodOptions {
+			log.Printf("[CORS preflight] %s %s %s", r.Method, r.URL.Path, duration)
+		} else {
+			log.Printf("%s %s %s", r.Method, r.URL.Path, duration)
+		}
+	})
+}
+
+// Middleware: разрешаем CORS
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Разрешаем фронт получать ответы
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// Если это preflight-запрос, сразу отвечаем
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
