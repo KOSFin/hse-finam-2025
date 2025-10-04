@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -35,16 +34,16 @@ func main() {
 	}
 
 	clusterer := radar.DefaultClusterer()
-	fmt.Println(cfg.VibeRouterAPIKey)
 	if cfg.VibeRouterAPIKey != "" {
 		llmClient := llm.NewClient(cfg.VibeRouterAPIKey)
-		clusterer = radar.LLMClusterer{
+		clusterer = &radar.LLMClusterer{
 			Client:      llmClient,
 			Model:       cfg.VibeRouterModel,
 			Temperature: cfg.LLMTemperature,
 			MaxTokens:   cfg.LLMMaxTokens,
 			MaxItems:    cfg.LLMMaxItems,
 			Fallback:    radar.NewHeuristicClusterer(6*time.Hour, 0.45),
+			CacheTTL:    2 * time.Minute,
 		}
 		log.Printf("LLM clustering enabled with model %s", cfg.VibeRouterModel)
 	}

@@ -12,12 +12,14 @@ import (
 type fakeChatClient struct {
 	response string
 	err      error
+	calls    int
 }
 
 func (f *fakeChatClient) ChatCompletion(ctx context.Context, req llm.ChatCompletionRequest) (*llm.ChatCompletionResponse, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	f.calls++
 	choice := llm.Choice{}
 	choice.Message.Content = f.response
 	return &llm.ChatCompletionResponse{Choices: []llm.Choice{choice}}, nil
@@ -64,13 +66,14 @@ func TestLLMClustererUsesResponse(t *testing.T) {
 	}`}
 
 	heuristic := NewHeuristicClusterer(6*time.Hour, 0.45)
-	clusterer := LLMClusterer{
+	clusterer := &LLMClusterer{
 		Client:      fake,
 		Model:       "gemini-2.5-flash",
 		Temperature: 0.2,
 		MaxTokens:   512,
 		MaxItems:    10,
 		Fallback:    heuristic,
+		CacheTTL:    time.Minute,
 	}
 
 	clusters, err := clusterer.BuildClusters(context.Background(), items)
@@ -99,10 +102,11 @@ func TestLLMClustererUsesResponse(t *testing.T) {
 func TestLLMClustererFallsBack(t *testing.T) {
 	items := []NewsItem{{ID: "n1", Headline: "One"}}
 	heuristic := NewHeuristicClusterer(6*time.Hour, 0.45)
-	clusterer := LLMClusterer{
+	clusterer := &LLMClusterer{
 		Client:   &fakeChatClient{err: errors.New("boom")},
 		Model:    "gemini-2.5-flash",
 		Fallback: heuristic,
+		CacheTTL: time.Minute,
 	}
 
 	clusters, err := clusterer.BuildClusters(context.Background(), items)
@@ -112,5 +116,32 @@ func TestLLMClustererFallsBack(t *testing.T) {
 
 	if len(clusters) == 0 {
 		t.Fatalf("expected fallback clusters")
+	}
+}
+
+func TestLLMClustererCachesBySignature(t *testing.T) {
+	items := []NewsItem{
+		{ID: "n1", Headline: "First", PublishedAt: time.Date(2025, 10, 3, 8, 0, 0, 0, time.UTC), URL: "https://example.com/1"},
+		{ID: "n2", Headline: "Second", PublishedAt: time.Date(2025, 10, 3, 9, 0, 0, 0, time.UTC), URL: "https://example.com/2"},
+	}
+
+	fake := &fakeChatClient{response: `{"clusters":[{"id":"same","news_ids":["n1","n2"],"primary_news_id":"n1"}]}`}
+
+	clusterer := &LLMClusterer{
+		Client:   fake,
+		Model:    "gemini-2.5-flash",
+		Fallback: NewHeuristicClusterer(6*time.Hour, 0.45),
+		CacheTTL: time.Minute,
+	}
+
+	if _, err := clusterer.BuildClusters(context.Background(), items); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if _, err := clusterer.BuildClusters(context.Background(), items); err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+
+	if fake.calls != 1 {
+		t.Fatalf("expected LLM to be called once, got %d", fake.calls)
 	}
 }

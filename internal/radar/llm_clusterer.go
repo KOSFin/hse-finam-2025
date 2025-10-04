@@ -2,11 +2,14 @@ package radar
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"finamhackbackend/internal/llm"
@@ -20,18 +23,40 @@ type LLMClusterer struct {
 	MaxTokens   int
 	MaxItems    int
 	Fallback    ClusterEngine
+	CacheTTL    time.Duration
+
+	cacheMu        sync.RWMutex
+	cacheKey       string
+	cacheGenerated time.Time
+	cacheClusters  []Cluster
 }
 
 // BuildClusters clusters news items using the configured LLM, optionally falling back to a heuristic strategy.
-func (c LLMClusterer) BuildClusters(ctx context.Context, items []NewsItem) ([]Cluster, error) {
-	fmt.Println("LLMClusterer.BuildClusters called")
+func (c *LLMClusterer) BuildClusters(ctx context.Context, items []NewsItem) ([]Cluster, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	if c.Client == nil || c.Model == "" {
-		return c.buildWithFallback(ctx, items, fmt.Errorf("llm clusterer misconfigured"))
+
+	signature := signatureForItems(items, c.MaxItems)
+	if clusters, ok := c.loadFromCache(signature); ok {
+		log.Printf("LLMClusterer: cache hit for %d items", len(items))
+		return clusters, nil
 	}
 
+	if c.Client == nil || c.Model == "" {
+		return c.buildWithFallback(ctx, items, signature, fmt.Errorf("llm clusterer misconfigured"))
+	}
+
+	clusters, err := c.buildWithLLM(ctx, items)
+	if err != nil {
+		return c.buildWithFallback(ctx, items, signature, err)
+	}
+
+	c.storeInCache(signature, clusters)
+	return clusters, nil
+}
+
+func (c *LLMClusterer) buildWithLLM(ctx context.Context, items []NewsItem) ([]Cluster, error) {
 	limited := items
 	if c.MaxItems > 0 && len(items) > c.MaxItems {
 		limited = make([]NewsItem, c.MaxItems)
@@ -41,12 +66,15 @@ func (c LLMClusterer) BuildClusters(ctx context.Context, items []NewsItem) ([]Cl
 	sorted := make([]NewsItem, len(limited))
 	copy(sorted, limited)
 	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].PublishedAt.Equal(sorted[j].PublishedAt) {
+			return sorted[i].ID < sorted[j].ID
+		}
 		return sorted[i].PublishedAt.Before(sorted[j].PublishedAt)
 	})
 
 	payload, err := c.buildPrompt(sorted)
 	if err != nil {
-		return c.buildWithFallback(ctx, items, err)
+		return nil, err
 	}
 
 	req := llm.ChatCompletionRequest{
@@ -61,37 +89,38 @@ func (c LLMClusterer) BuildClusters(ctx context.Context, items []NewsItem) ([]Cl
 
 	resp, err := c.Client.ChatCompletion(ctx, req)
 	if err != nil {
-		return c.buildWithFallback(ctx, items, err)
+		return nil, err
 	}
 	if len(resp.Choices) == 0 {
-		return c.buildWithFallback(ctx, items, fmt.Errorf("llm response missing choices"))
+		return nil, fmt.Errorf("llm response missing choices")
 	}
 
 	clusters, err := c.parseResponse(resp.Choices[0].Message.Content, items)
 	if err != nil {
-		return c.buildWithFallback(ctx, items, err)
+		return nil, err
 	}
 
 	if len(clusters) == 0 {
-		return c.buildWithFallback(ctx, items, fmt.Errorf("llm response returned no clusters"))
+		return nil, fmt.Errorf("llm response returned no clusters")
 	}
 
 	return clusters, nil
 }
 
-func (c LLMClusterer) buildWithFallback(ctx context.Context, items []NewsItem, cause error) ([]Cluster, error) {
+func (c *LLMClusterer) buildWithFallback(ctx context.Context, items []NewsItem, signature string, cause error) ([]Cluster, error) {
 	log.Printf("LLMClusterer fallback: %v", cause)
-	if c.Fallback != nil {
-		clusters, fbErr := c.Fallback.BuildClusters(ctx, items)
-		if fbErr != nil {
-			return nil, fmt.Errorf("llm fallback error: %v (original: %w)", fbErr, cause)
-		}
-		return clusters, nil
+	if c.Fallback == nil {
+		return nil, cause
 	}
-	return nil, cause
+	clusters, fbErr := c.Fallback.BuildClusters(ctx, items)
+	if fbErr != nil {
+		return nil, fmt.Errorf("llm fallback error: %v (original: %w)", fbErr, cause)
+	}
+	c.storeInCache(signature, clusters)
+	return clusters, nil
 }
 
-func (c LLMClusterer) buildPrompt(items []NewsItem) ([]llm.Message, error) {
+func (c *LLMClusterer) buildPrompt(items []NewsItem) ([]llm.Message, error) {
 	type promptItem struct {
 		ID          string    `json:"id"`
 		Headline    string    `json:"headline"`
@@ -166,7 +195,7 @@ News payload:
 	}, nil
 }
 
-func (c LLMClusterer) parseResponse(content string, items []NewsItem) ([]Cluster, error) {
+func (c *LLMClusterer) parseResponse(content string, items []NewsItem) ([]Cluster, error) {
 	jsonPayload := extractJSON(content)
 	if jsonPayload == "" {
 		return nil, fmt.Errorf("llm response missing json payload")
@@ -259,6 +288,71 @@ func (c LLMClusterer) parseResponse(content string, items []NewsItem) ([]Cluster
 	}
 
 	return clusters, nil
+}
+
+func (c *LLMClusterer) loadFromCache(key string) ([]Cluster, bool) {
+	if key == "" {
+		return nil, false
+	}
+	c.cacheMu.RLock()
+	defer c.cacheMu.RUnlock()
+
+	if key != c.cacheKey {
+		return nil, false
+	}
+	if c.CacheTTL > 0 && time.Since(c.cacheGenerated) > c.CacheTTL {
+		return nil, false
+	}
+
+	return cloneClusters(c.cacheClusters), true
+}
+
+func (c *LLMClusterer) storeInCache(key string, clusters []Cluster) {
+	if key == "" {
+		return
+	}
+	c.cacheMu.Lock()
+	c.cacheKey = key
+	c.cacheGenerated = time.Now().UTC()
+	c.cacheClusters = cloneClusters(clusters)
+	c.cacheMu.Unlock()
+}
+
+func signatureForItems(items []NewsItem, maxItems int) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	sorted := make([]NewsItem, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].PublishedAt.Equal(sorted[j].PublishedAt) {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].PublishedAt.Before(sorted[j].PublishedAt)
+	})
+
+	if maxItems > 0 && len(sorted) > maxItems {
+		sorted = sorted[:maxItems]
+	}
+
+	hasher := sha256.New()
+	for _, item := range sorted {
+		hasher.Write([]byte(item.ID))
+		hasher.Write([]byte(item.PublishedAt.UTC().Format(time.RFC3339Nano)))
+		hasher.Write([]byte(strings.ToLower(item.Language)))
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func cloneClusters(src []Cluster) []Cluster {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]Cluster, len(src))
+	copy(out, src)
+	return out
 }
 
 func collectStrings(items []NewsItem, selector func(NewsItem) []string) []string {
