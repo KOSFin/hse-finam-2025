@@ -19,7 +19,9 @@ func TestRadarEndpoint(t *testing.T) {
 		t.Fatalf("static source: %v", err)
 	}
 
-	sources, err := radar.NewSourceRegistry(source)
+	ingest := radar.NewIngestSource("test-ingest")
+
+	sources, err := radar.NewSourceRegistry(source, ingest)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
@@ -29,7 +31,7 @@ func TestRadarEndpoint(t *testing.T) {
 		t.Fatalf("pipeline: %v", err)
 	}
 
-	srv := NewServer(pipeline, config.Config{DefaultWindow: 24 * time.Hour, TopK: 2})
+	srv := NewServer(pipeline, config.Config{DefaultWindow: 24 * time.Hour, TopK: 2}, ingest)
 
 	req := httptest.NewRequest(http.MethodGet, "/radar?limit=2&from=2025-10-02T23:00:00Z&to=2025-10-04T00:00:00Z", nil).WithContext(context.Background())
 	rec := httptest.NewRecorder()

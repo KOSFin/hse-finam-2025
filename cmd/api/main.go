@@ -27,7 +27,9 @@ func main() {
 		log.Fatalf("init static source: %v", err)
 	}
 
-	sources, err := radar.NewSourceRegistry(staticSource)
+	ingestSource := radar.NewIngestSource("ingest")
+
+	sources, err := radar.NewSourceRegistry(staticSource, ingestSource)
 	if err != nil {
 		log.Fatalf("init source registry: %v", err)
 	}
@@ -52,7 +54,7 @@ func main() {
 		log.Fatalf("init pipeline: %v", err)
 	}
 
-	server := transporthttp.NewServer(pipeline, cfg)
+	server := transporthttp.NewServer(pipeline, cfg, ingestSource)
 
 	httpServer := &http.Server{
 		Addr:         cfg.ListenAddr,

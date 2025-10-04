@@ -60,7 +60,7 @@ func NewClient(apiKey string, opts ...func(*Client)) *Client {
 		baseURL: defaultBaseURL,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 30 * time.Hour,
 		},
 	}
 	for _, opt := range opts {
